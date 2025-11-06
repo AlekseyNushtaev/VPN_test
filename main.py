@@ -7,6 +7,8 @@ from bot import bot
 # from db.models import create_tables
 from typing import NoReturn
 
+from monitor import XrayMonitor
+
 logger: logging.Logger = logging.getLogger(__name__)
 logging.basicConfig(
             level=logging.INFO,

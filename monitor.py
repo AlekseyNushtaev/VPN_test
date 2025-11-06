@@ -1,41 +1,67 @@
 import asyncio
-import os
 import re
 from datetime import datetime, timedelta
 from typing import Set, Dict
 from aiogram import Bot
+
 from config import ADMIN_IDS
 
 
 class XrayMonitor:
     def __init__(self, bot: Bot):
         self.bot = bot
-        self.last_positions: Dict[str, int] = {}
         self.known_ips: Set[str] = set()
-        self.log_files = [
-            '/etc/v2ray-agent/xray/access.log',
-            '/var/log/xray/access.log',
-            '/usr/local/etc/xray/access.log'
-        ]
+        self.last_check_time = datetime.now()
 
     async def start_monitoring(self):
-        """Запускает мониторинг журналов Xray"""
+        """Запускает мониторинг журналов Xray через journalctl"""
         while True:
             try:
-                await self.check_logs()
+                await self.check_journalctl_logs()
                 await asyncio.sleep(60)  # Проверка каждую минуту
             except Exception as e:
                 print(f"Ошибка мониторинга: {e}")
                 await asyncio.sleep(60)
 
-    async def check_logs(self):
-        """Проверяет журналы на новые подключения"""
+    async def check_journalctl_logs(self):
+        """Проверяет логи Xray через journalctl за последнюю минуту"""
         current_time = datetime.now()
         new_ips = set()
 
-        for log_file in self.log_files:
-            ips = await self.parse_log_file(log_file, current_time)
-            new_ips.update(ips)
+        try:
+            # Получаем логи за последнюю минуту
+            since_time = (current_time - timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
+
+            # Запускаем процесс journalctl
+            process = await asyncio.create_subprocess_shell(
+                f"journalctl -u xray --since '{since_time}' --no-pager",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+
+            stdout, stderr = await process.communicate()
+
+            if process.returncode == 0:
+                logs = stdout.decode('utf-8', errors='ignore')
+                new_ips = self.parse_journalctl_logs(logs)
+            else:
+                error_msg = stderr.decode('utf-8', errors='ignore')
+                print(f"Ошибка journalctl: {error_msg}")
+
+                # Пробуем альтернативный вариант (может потребоваться sudo)
+                process = await asyncio.create_subprocess_shell(
+                    f"sudo journalctl -u xray --since '{since_time}' --no-pager",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+
+                stdout, stderr = await process.communicate()
+                if process.returncode == 0:
+                    logs = stdout.decode('utf-8', errors='ignore')
+                    new_ips = self.parse_journalctl_logs(logs)
+
+        except Exception as e:
+            print(f"Ошибка выполнения journalctl: {e}")
 
         # Фильтруем только новые IP
         truly_new_ips = new_ips - self.known_ips
@@ -44,87 +70,70 @@ class XrayMonitor:
             self.known_ips.update(truly_new_ips)
             await self.send_notification(truly_new_ips, current_time)
 
-    async def parse_log_file(self, log_file: str, current_time: datetime) -> Set[str]:
-        """Парсит файл лога и возвращает новые IP"""
+        self.last_check_time = current_time
+
+    def parse_journalctl_logs(self, logs: str) -> Set[str]:
+        """Парсит логи journalctl и возвращает IP адреса"""
         ips = set()
 
-        try:
-            # Получаем текущую позицию в файле
-            current_position = self.last_positions.get(log_file, 0)
+        if not logs.strip():
+            return ips
 
-            try:
-                with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
-                    # Перемещаемся к последней известной позиции
-                    if current_position > 0:
-                        f.seek(current_position)
+        lines = logs.split('\n')
 
-                    # Читаем новые строки
-                    new_lines = f.readlines()
+        for line in lines:
+            if not line.strip():
+                continue
 
-                    # Сохраняем новую позицию
-                    self.last_positions[log_file] = f.tell()
-
-                    # Парсим IP из новых строк
-                    for line in new_lines:
-                        ip = self.extract_ip_from_line(line, current_time)
-                        if ip:
-                            ips.add(ip)
-
-            except FileNotFoundError:
-                print(f"Файл лога не найден: {log_file}")
-            except UnicodeDecodeError:
-                # Пробуем с другой кодировкой
-                with open(log_file, 'r', encoding='latin-1', errors='ignore') as f:
-                    if current_position > 0:
-                        f.seek(current_position)
-
-                    new_lines = f.readlines()
-                    self.last_positions[log_file] = f.tell()
-
-                    for line in new_lines:
-                        ip = self.extract_ip_from_line(line, current_time)
-                        if ip:
-                            ips.add(ip)
-
-        except Exception as e:
-            print(f"Ошибка чтения файла {log_file}: {e}")
+            # Ищем IP адреса в строках с подключениями
+            ip = self.extract_ip_from_journal_line(line)
+            if ip:
+                ips.add(ip)
 
         return ips
 
-    def extract_ip_from_line(self, line: str, current_time: datetime) -> str:
-        """Извлекает IP из строки лога и проверяет время"""
+    def extract_ip_from_journal_line(self, line: str) -> str:
+        """Извлекает IP адрес из строки journalctl"""
         try:
-            # Пропускаем пустые строки
-            if not line.strip():
+            # Пропускаем системные строки journalctl
+            if line.startswith('--') or 'Logs begin' in line or 'Logs end' in line:
                 return None
 
-            # Парсим время из лога (формат: 2025/11/06 10:16:50.792079)
-            time_match = re.match(r'(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})', line)
-            if not time_match:
-                return None
+            # Ищем паттерны IP адресов в логах Xray
+            # Пример строки: "from 92.255.142.115:45159 accepted tcp:clients4.google.com:443"
+            ip_patterns = [
+                r'from\s+(\d+\.\d+\.\d+\.\d+):\d+',  # from IP:PORT
+                r'(\d+\.\d+\.\d+\.\d+):\d+\s+accepted',  # IP:PORT accepted
+                r'client:\s+(\d+\.\d+\.\d+\.\d+)',  # client: IP
+            ]
 
-            log_time_str = time_match.group(1)
-            log_time = datetime.strptime(log_time_str, '%Y/%m/%d %H:%M:%S')
+            for pattern in ip_patterns:
+                match = re.search(pattern, line)
+                if match:
+                    ip = match.group(1)
 
-            # Проверяем, что запись не старше 2 минут
-            if current_time - log_time > timedelta(minutes=2):
-                return None
-
-            # Ищем IP адрес в строке
-            ip_pattern = r'from (\d+\.\d+\.\d+\.\d+):\d+'
-            ip_match = re.search(ip_pattern, line)
-
-            if ip_match:
-                ip = ip_match.group(1)
-
-                # Игнорируем локальные и служебные IP
-                if not self.is_private_ip(ip):
-                    return ip
+                    # Проверяем, что IP валидный и не приватный
+                    if self.is_valid_ip(ip) and not self.is_private_ip(ip):
+                        return ip
 
         except Exception as e:
-            print(f"Ошибка парсинга строки: {e}")
+            print(f"Ошибка парсинга строки journalctl: {e}")
 
         return None
+
+    def is_valid_ip(self, ip: str) -> bool:
+        """Проверяет валидность IP адреса"""
+        ip_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
+        if not re.match(ip_pattern, ip):
+            return False
+
+        # Проверяем, что каждый октет в диапазоне 0-255
+        octets = ip.split('.')
+        for octet in octets:
+            if not (0 <= int(octet) <= 255):
+                return False
+
+        return True
 
     def is_private_ip(self, ip: str) -> bool:
         """Проверяет, является ли IP приватным"""
@@ -143,14 +152,15 @@ class XrayMonitor:
             return
 
         message = (
-            "🔍 **Новые подключения к VPN**\n"
+            "🔍 **Новые подключения к VPN (через journalctl)**\n"
             f"*Время:* {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"*Количество IP:* {len(new_ips)}\n"
             f"*IP адреса:*\n"
         )
 
         for ip in sorted(new_ips):
-            message += f"• `{ip}`\n"
+            # Попробуем получить информацию о стране (опционально)
+            message += f"• `{ip}` \n"
 
         for admin_id in ADMIN_IDS:
             try:
@@ -162,11 +172,41 @@ class XrayMonitor:
             except Exception as e:
                 print(f"Не удалось отправить сообщение админу {admin_id}: {e}")
 
+
     async def get_current_stats(self) -> str:
         """Возвращает текущую статистику мониторинга"""
         return (
-            f"📊 **Статистика мониторинга**\n"
+            f"📊 **Статистика мониторинга (journalctl)**\n"
             f"*Отслеживаемых IP:* {len(self.known_ips)}\n"
-            f"*Файлы логов:* {len([f for f in self.log_files if os.path.exists(f)])}\n"
-            f"*Последняя проверка:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"*Последняя проверка:* {self.last_check_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"*Следующая проверка:* {(self.last_check_time + timedelta(minutes=1)).strftime('%Y-%m-%d %H:%M:%S')}"
         )
+
+    async def get_recent_activity(self, hours: int = 24) -> str:
+        """Получает активность за указанный период"""
+        try:
+            since_time = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+
+            process = await asyncio.create_subprocess_shell(
+                f"journalctl -u xray --since '{since_time}' --no-pager",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+
+            stdout, stderr = await process.communicate()
+
+            if process.returncode == 0:
+                logs = stdout.decode('utf-8', errors='ignore')
+                ips = self.parse_journalctl_logs(logs)
+
+                return (
+                    f"📈 **Активность за {hours}ч**\n"
+                    f"*Уникальных IP:* {len(ips)}\n"
+                    f"*Всего записей в логе:* {len(logs.splitlines())}\n"
+                    f"*Период:* {since_time} - сейчас"
+                )
+            else:
+                return "❌ Не удалось получить данные о активности"
+
+        except Exception as e:
+            return f"❌ Ошибка получения активности: {str(e)}"
