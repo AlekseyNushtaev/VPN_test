@@ -3,10 +3,12 @@ import logging
 
 from aiogram import Dispatcher
 
+import handlers_help
+import handlers_ref_oferta
 from bot import bot
-# from db.models import create_tables
+from db.models import create_tables
 from typing import NoReturn
-
+import handlers
 from monitor import XrayMonitor
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -39,7 +41,7 @@ async def main() -> None:
     """
     try:
         # Инициализация таблиц в базе данных
-        # await create_tables()
+        await create_tables()
         await bot.send_message(1012882762, 'Бот запущен!!!')
         # Настройка базового логирования
         logger.info("Инициализация таблиц базы данных завершена")
@@ -48,11 +50,10 @@ async def main() -> None:
         dp: Dispatcher = Dispatcher()
 
         # Регистрация роутеров
-        # dp.include_router(handlers.router)
+        dp.include_router(handlers.router)
+        dp.include_router(handlers_help.router)
+        dp.include_router(handlers_ref_oferta.router)
         logger.info("Роутеры успешно зарегистрированы")
-
-        monitor = XrayMonitor(bot)
-        asyncio.create_task(monitor.start_monitoring())
 
         # Удаление вебхука для очистки ожидающих обновлений
         await bot.delete_webhook(drop_pending_updates=True)

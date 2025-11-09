@@ -6,5 +6,8 @@ from typing import Optional, List
 load_dotenv()
 
 TG_TOKEN: Optional[str] = os.environ.get("TG_TOKEN")
+URL_VPN: Optional[str] = os.environ.get("URL_VPN")
+URL_BOT: Optional[str] = os.environ.get("URL_BOT")
+LANG: Optional[str] = os.environ.get("LANG")
 ADMIN_IDS: List[int] = [int(x) for x in os.environ.get("ADMIN_IDS", "").split()]
 
