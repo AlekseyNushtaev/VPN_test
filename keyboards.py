@@ -1,4 +1,4 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, KeyboardButton, ReplyKeyboardMarkup
 
 from config import LANG, URL_BOT
 from lexicon import lexicon
@@ -199,4 +199,12 @@ def help_windows_back_kb():
             [InlineKeyboardButton(text=lexicon[LANG]['buttons']['back'], callback_data="help_windows")],
             [InlineKeyboardButton(text=lexicon[LANG]['buttons']['main_menu'], callback_data="main_menu")]
         ]
+    )
+
+
+def admin_reply_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="📊 Статистика")]],
+        resize_keyboard=True,
+        one_time_keyboard=False  # Клавиатура не будет скрыта после нажатия
     )

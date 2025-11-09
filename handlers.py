@@ -1,13 +1,14 @@
 from aiogram import Router, types
 from aiogram.filters import Command
 from aiogram.types import FSInputFile
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from config import LANG
-from db.models import User, Session
+from db.models import User, Session, Connection
 from keyboards import main_menu_kb, devices_kb, android_kb, ios_kb, end_connect_kb, windows_kb, \
-    macos_kb
+    macos_kb, admin_reply_kb
 from lexicon import lexicon
+from config import ADMIN_IDS
 
 router = Router()
 
@@ -34,6 +35,13 @@ async def start_handler(message: types.Message):
             lexicon[LANG]['start_message'],
             reply_markup=main_menu_kb()
         )
+
+        # Проверка на администратора
+        if message.from_user.id in ADMIN_IDS:
+            await message.answer(
+                "Вы администратор",
+                reply_markup=admin_reply_kb()
+            )
 
 
 @router.callback_query(lambda c: c.data == "connect")
@@ -114,3 +122,18 @@ async def connect_phone_handler(callback: types.CallbackQuery):
         await callback.message.delete()
     except:
         pass
+
+
+@router.message(lambda message: message.text == "📊 Статистика" and message.from_user.id in ADMIN_IDS)
+async def admin_stats_message_handler(message: types.Message):
+    async with Session() as session:
+        users_count = await session.scalar(select(func.count(User.user_id)))
+        connections_count = await session.scalar(select(func.count(Connection.id)))
+
+    stats_text = (
+        f"📊 Статистика бота:\n\n"
+        f"• Зашло в бот - {users_count}\n"
+        f"• Выполнило подключений - {connections_count}"
+    )
+
+    await message.answer(stats_text)

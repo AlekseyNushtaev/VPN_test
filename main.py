@@ -55,6 +55,12 @@ async def main() -> None:
         dp.include_router(handlers_ref_oferta.router)
         logger.info("Роутеры успешно зарегистрированы")
 
+        # Запуск мониторинга Xray
+        monitor = XrayMonitor(bot)
+        asyncio.create_task(monitor.start_monitoring())
+
+        logger.info("Мониторинг Xray запущен")
+
         # Удаление вебхука для очистки ожидающих обновлений
         await bot.delete_webhook(drop_pending_updates=True)
         logger.info("Ожидающие обновления очищены")
