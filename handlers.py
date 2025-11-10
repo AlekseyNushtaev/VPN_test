@@ -9,9 +9,73 @@ from keyboards import main_menu_kb, devices_kb, android_kb, ios_kb, end_connect_
     macos_kb, admin_reply_kb
 from lexicon import lexicon
 from config import ADMIN_IDS
+import openpyxl
+from io import BytesIO
+from datetime import datetime
 
 router = Router()
 
+
+@router.message(Command("stats"))
+async def stats_handler(message: types.Message):
+    # Проверяем, является ли пользователь администратором
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("У вас нет прав для выполнения этой команды")
+        return
+
+    async with Session() as session:
+        # Получаем все записи о подключениях
+        result = await session.execute(select(Connection))
+        connections = result.scalars().all()
+
+    if not connections:
+        await message.answer("В базе данных нет записей о подключениях")
+        return
+
+    # Создаем новую книгу Excel
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Статистика подключений"
+
+    # Заголовки столбцов
+    headers = ["ID", "IP адрес", "Время начала подключения"]
+    ws.append(headers)
+
+    # Заполняем данными
+    for conn in connections:
+        ws.append([
+            conn.id,
+            conn.ip,
+            conn.start_time.strftime("%Y-%m-%d %H:%M:%S")
+        ])
+
+    # Авто-ширина столбцов
+    for column in ws.columns:
+        max_length = 0
+        column_letter = column[0].column_letter
+        for cell in column:
+            try:
+                if len(str(cell.value)) > max_length:
+                    max_length = len(str(cell.value))
+            except:
+                pass
+        adjusted_width = min(max_length + 2, 50)
+        ws.column_dimensions[column_letter].width = adjusted_width
+
+    # Сохраняем в байтовый поток
+    excel_file = BytesIO()
+    wb.save(excel_file)
+    excel_file.seek(0)
+
+    # Отправляем файл
+    filename = f"connections_stats_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.xlsx"
+    await message.answer_document(
+        types.BufferedInputFile(
+            excel_file.read(),
+            filename=filename
+        ),
+        caption="📊 Статистика подключений"
+    )
 
 @router.message(Command("start"))
 async def start_handler(message: types.Message):
