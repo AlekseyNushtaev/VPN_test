@@ -151,7 +151,7 @@ class XrayMonitor:
         lines = logs.split('\n')
 
         for line in lines:
-            if not line.strip():
+            if not line.strip() or 'rejected' in line:
                 continue
 
             # Ищем IP адреса в строках с подключениями
