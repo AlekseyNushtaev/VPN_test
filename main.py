@@ -56,8 +56,8 @@ async def main() -> None:
         logger.info("Роутеры успешно зарегистрированы")
 
         # Запуск мониторинга Xray
-        # monitor = XrayMonitor(bot)
-        # asyncio.create_task(monitor.start_monitoring())
+        monitor = XrayMonitor(bot)
+        asyncio.create_task(monitor.start_monitoring())
 
         logger.info("Мониторинг Xray запущен")
 
